@@ -1,0 +1,34 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
+
+batching:
+  strategy: "queue_depth"
+  min_batch_size: 1
+  max_batch_size: 32
+  min_wait_ms: 5
+  max_wait_ms: 100
+  queue_depth_low_threshold: 10
+  queue_depth_high_threshold: 100
+  queue_capacity: 10000
+  token_bucketing_enabled: true
+  priority_enabled: true
+
+workers:
+  count: 4
+  base_latency_ms: 10
+  per_token_latency_ms: 0.5
+  latency_variance: 0.1
+  max_batch_tokens: 8192
+
+health:
+  check_interval: 5s
+  failure_threshold: 3
+  recovery_timeout: 30s
+
+metrics:
+  collection_interval: 100ms
+  percentile_window_size: 1000
+  history_retention: 1h
