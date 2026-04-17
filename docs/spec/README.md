@@ -332,17 +332,20 @@ adaptive-batching-engine/
 
 ```go
 // go.mod
-module github.com/yourname/adaptive-batching-engine
+module github.com/briankim06/adaptive-batching-engine
 
-go 1.22
+go 1.22 // minimum; repo currently uses 1.25.x to satisfy viper
 
 require (
-    github.com/go-chi/chi/v5              // HTTP router
-    github.com/spf13/viper                // Configuration
-    github.com/prometheus/client_golang   // Prometheus metrics
-    github.com/google/uuid                // UUIDs
-    github.com/rs/zerolog                 // Structured logging
-    golang.org/x/sync                     // errgroup
-    github.com/gorilla/websocket          // Dashboard WebSocket
+    github.com/go-chi/chi/v5              // HTTP router              (Phase 5)
+    github.com/spf13/viper                // Configuration            (Phase 1)
+    github.com/prometheus/client_golang   // Prometheus metrics       (Phase 4)
+    github.com/google/uuid                // UUIDs                    (Phase 1)
+    github.com/rs/zerolog                 // Structured logging       (Phase 5)
+    golang.org/x/sync                     // errgroup                 (Phase 3+)
+    github.com/gorilla/websocket          // Dashboard WebSocket      (Phase 6)
 )
 ```
+
+Phase 1 pulls in only `viper` and `uuid`; the remaining dependencies are
+added incrementally as the consuming phases land.

@@ -1,6 +1,8 @@
 package strategies
 
 import (
+	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,78 +22,122 @@ func (s *stubStrategy) Name() string {
 	return s.name
 }
 
-func (s *stubStrategy) CalculateTimeout(int, *StrategyMetrics) time.Duration {
-	return s.timeout
-}
+func (s *stubStrategy) CalculateTimeout(int, *StrategyMetrics) time.Duration { return s.timeout }
 
-func (s *stubStrategy) ShouldFlush([]*models.InferenceRequest, int) bool {
-	return s.shouldFlush
-}
+func (s *stubStrategy) ShouldFlush([]*models.InferenceRequest, int) bool { return s.shouldFlush }
 
-func TestLatencyAwareStrategyAdjustsTimeout(t *testing.T) {
+func TestLatencyAwareInitialMultiplierIsOne(t *testing.T) {
 	base := &stubStrategy{timeout: 100 * time.Millisecond}
-	strategy := NewLatencyAwareStrategy(base)
-
-	timeout := strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 100})
-	expected := 80 * time.Millisecond
-	if timeout != expected {
-		t.Errorf("expected timeout %v, got %v", expected, timeout)
-	}
-
-	timeout = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 70, TargetP99Ms: 100})
-	expected = 120 * time.Millisecond
-	if timeout != expected {
-		t.Errorf("expected timeout %v, got %v", expected, timeout)
-	}
-}
-
-func TestLatencyAwareStrategyNoMetricsUsesBase(t *testing.T) {
-	base := &stubStrategy{timeout: 100 * time.Millisecond}
-	strategy := NewLatencyAwareStrategy(base)
+	strategy := NewLatencyAwareStrategy(base, 0.05, 100)
 
 	timeout := strategy.CalculateTimeout(0, nil)
 	if timeout != 100*time.Millisecond {
-		t.Errorf("expected base timeout, got %v", timeout)
+		t.Fatalf("expected base timeout with initial multiplier 1.0, got %v", timeout)
 	}
-
-	timeout = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 0})
-	if timeout != 100*time.Millisecond {
-		t.Errorf("expected base timeout, got %v", timeout)
+	if strategy.Multiplier() != 1.0 {
+		t.Fatalf("expected initial multiplier 1.0, got %v", strategy.Multiplier())
 	}
 }
 
-func TestLatencyAwareStrategyClampsTimeout(t *testing.T) {
-	base := &stubStrategy{timeout: 1 * time.Millisecond}
-	strategy := NewLatencyAwareStrategy(base)
+func TestLatencyAwareProportionalStep(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	kP := 0.5 // large gain so a single step is easy to assert
+	strategy := NewLatencyAwareStrategy(base, kP, 100)
 
-	timeout := strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 200, TargetP99Ms: 100})
-	if timeout != 1*time.Millisecond {
-		t.Errorf("expected min clamp to 1ms, got %v", timeout)
+	// Measured P99 is 20% above target → errRatio = 0.2.
+	// newMult = 1.0 - 0.5*0.2 = 0.9 → timeout = 100ms*0.9 = 90ms.
+	got := strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 100})
+	want := 90 * time.Millisecond
+	if got != want {
+		t.Fatalf("expected %v after proportional step, got %v (mult=%v)", want, got, strategy.Multiplier())
 	}
-
-	base.timeout = 5 * time.Second
-	timeout = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 10, TargetP99Ms: 100})
-	if timeout != 5*time.Second {
-		t.Errorf("expected max clamp to 5s, got %v", timeout)
+	if diff := math.Abs(strategy.Multiplier() - 0.9); diff > 1e-9 {
+		t.Fatalf("expected multiplier 0.9, got %v", strategy.Multiplier())
 	}
 }
 
-func TestLatencyAwareStrategyShouldFlushDelegates(t *testing.T) {
-	base := &stubStrategy{timeout: 10 * time.Millisecond, shouldFlush: true}
-	strategy := NewLatencyAwareStrategy(base)
+func TestLatencyAwareConvergesTowardsTarget(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 100)
+
+	// Sustained over-target should move multiplier downwards each step.
+	for i := 0; i < 20; i++ {
+		_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 100})
+	}
+	if strategy.Multiplier() >= 1.0 {
+		t.Fatalf("expected multiplier to fall below 1.0 after sustained over-target, got %v", strategy.Multiplier())
+	}
+}
+
+func TestLatencyAwareClampsMultiplier(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 10.0, 100)
+
+	// Huge kP + big error should trip the lower clamp at 0.5.
+	_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 200, TargetP99Ms: 100})
+	if strategy.Multiplier() != 0.5 {
+		t.Fatalf("expected lower clamp 0.5, got %v", strategy.Multiplier())
+	}
+
+	// Reset and exercise upper clamp.
+	strategy = NewLatencyAwareStrategy(base, 10.0, 100)
+	_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 10, TargetP99Ms: 100})
+	if strategy.Multiplier() != 2.0 {
+		t.Fatalf("expected upper clamp 2.0, got %v", strategy.Multiplier())
+	}
+}
+
+func TestLatencyAwareNoMetricsLeavesMultiplier(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 100)
+
+	_ = strategy.CalculateTimeout(0, nil)
+	_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 0, TargetP99Ms: 100})
+	_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 0})
+
+	if strategy.Multiplier() != 1.0 {
+		t.Fatalf("expected multiplier untouched without both P99 and target, got %v", strategy.Multiplier())
+	}
+}
+
+func TestLatencyAwareShouldFlushDelegates(t *testing.T) {
+	base := &stubStrategy{shouldFlush: true}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 100)
 
 	if !strategy.ShouldFlush(nil, 0) {
-		t.Error("expected ShouldFlush to delegate to base strategy")
+		t.Fatal("expected ShouldFlush to delegate to base strategy")
 	}
 }
 
-func TestLatencyAwareStrategyNilBase(t *testing.T) {
-	strategy := NewLatencyAwareStrategy(nil)
+func TestLatencyAwareNilBase(t *testing.T) {
+	strategy := NewLatencyAwareStrategy(nil, 0.05, 100)
 
 	if strategy.CalculateTimeout(0, nil) != 0 {
-		t.Error("expected zero timeout when base strategy is nil")
+		t.Fatal("expected zero timeout when base strategy is nil")
 	}
 	if strategy.ShouldFlush(nil, 0) {
-		t.Error("expected ShouldFlush false when base strategy is nil")
+		t.Fatal("expected ShouldFlush false when base strategy is nil")
+	}
+}
+
+func TestLatencyAwareConcurrentCalculateTimeout(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.01, 100)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 120, TargetP99Ms: 100})
+			}
+		}()
+	}
+	wg.Wait()
+
+	mult := strategy.Multiplier()
+	if mult < 0.5 || mult > 2.0 {
+		t.Fatalf("multiplier escaped clamp under concurrency: %v", mult)
 	}
 }

@@ -35,9 +35,6 @@ func (b *Batch) TotalTokens() int {
 }
 
 func (b *Batch) MaxPriority() Priority {
-	if len(b.Requests) == 0 {
-		return PriorityNormal
-	}
 	max := PriorityLow
 	for _, r := range b.Requests {
 		if r.Priority > max {

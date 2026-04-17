@@ -1,14 +1,12 @@
-.PHONY: build test run lint clean
+.PHONY: build test test-coverage run lint sim clean deps bench
 
-BINARY_NAME=batching-engine
-BUILD_DIR=bin
+# Spec targets (docs/spec/01-setup.md): build, test, run, lint, sim.
 
 build:
-	go build -o $(BUILD_DIR)/server ./cmd/server
-	go build -o $(BUILD_DIR)/simulator ./cmd/simulator
+	go build ./...
 
 test:
-	go test -v -race ./...
+	go test ./... -v -race
 
 test-coverage:
 	go test -v -race -coverprofile=coverage.out ./...
@@ -18,11 +16,13 @@ run:
 	go run ./cmd/server
 
 lint:
-	golangci-lint run ./...
+	go vet ./...
+
+sim:
+	go run ./cmd/simulator
 
 clean:
-	rm -rf $(BUILD_DIR)
-	rm -f coverage.out coverage.html
+	rm -rf bin coverage.out coverage.html
 
 deps:
 	go mod download

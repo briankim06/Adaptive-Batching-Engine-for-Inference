@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -53,17 +54,25 @@ func (p Priority) MaxWaitMs() int {
 }
 
 type InferenceRequest struct {
-	ID              string         `json:"id"`
-	Prompt          string         `json:"prompt"`
-	MaxTokens       int            `json:"max_tokens"`
-	Priority        Priority       `json:"priority"`
-	RequestType     RequestType    `json:"request_type"`
-	CreatedAt       time.Time      `json:"created_at"`
-	EstimatedTokens int            `json:"estimated_tokens"`
-	ResultChan      chan *RequestResult `json:"-"`
+	ID              string      `json:"id"`
+	Prompt          string      `json:"prompt"`
+	MaxTokens       int         `json:"max_tokens"`
+	Priority        Priority    `json:"priority"`
+	RequestType     RequestType `json:"request_type"`
+	CreatedAt       time.Time   `json:"created_at"`
+	EstimatedTokens int         `json:"estimated_tokens"`
+
+	// Ctx is the originating HTTP handler's request context. Workers inspect
+	// Ctx.Err() before and after the upstream call so requests whose clients
+	// have already disconnected or timed out can be dropped cheaply.
+	Ctx context.Context `json:"-"`
+
+	// ResultChan delivers the per-request result back to the HTTP handler.
+	// Always buffered with capacity 1 so workers never block on send.
+	ResultChan chan *RequestResult `json:"-"`
 }
 
-func NewInferenceRequest(prompt string, maxTokens int, priority Priority, reqType RequestType) *InferenceRequest {
+func NewInferenceRequest(ctx context.Context, prompt string, maxTokens int, priority Priority, reqType RequestType) *InferenceRequest {
 	return &InferenceRequest{
 		ID:              uuid.New().String(),
 		Prompt:          prompt,
@@ -72,6 +81,7 @@ func NewInferenceRequest(prompt string, maxTokens int, priority Priority, reqTyp
 		RequestType:     reqType,
 		CreatedAt:       time.Now(),
 		EstimatedTokens: len(prompt)/4 + maxTokens,
+		Ctx:             ctx,
 		ResultChan:      make(chan *RequestResult, 1),
 	}
 }

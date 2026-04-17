@@ -17,20 +17,23 @@ Shared references:
 ```
 Create a Go project for "adaptive-batching-engine" with the directory
 structure defined in ../README.md. Initialize go.mod with module path
-github.com/yourname/adaptive-batching-engine and Go 1.22.
+github.com/briankim06/adaptive-batching-engine and a Go toolchain of 1.22
+or newer (the checked-in go.mod currently pins 1.25.x to satisfy viper's
+minimum).
 
-Add dependencies:
-  chi v5, viper, prometheus/client_golang, zerolog, uuid,
-  golang.org/x/sync, gorilla/websocket.
+Add dependencies (added incrementally as phases land):
+  Phase 1: viper, uuid.
+  Phase 3+: chi v5, prometheus/client_golang, zerolog,
+            golang.org/x/sync, gorilla/websocket.
 
 Create all directories from the project structure.
 
 Create a Makefile with targets:
   build   — go build ./...
   test    — go test ./... -v -race
-  run     — go run cmd/server/main.go
+  run     — go run ./cmd/server
   lint    — go vet ./...
-  sim     — go run cmd/simulator/main.go
+  sim     — go run ./cmd/simulator
 
 Verify: go build ./... (should produce no output).
 ```

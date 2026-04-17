@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -73,8 +74,9 @@ func TestNewInferenceRequest(t *testing.T) {
 	maxTokens := 100
 	priority := PriorityHigh
 	reqType := RequestTypeCompletion
+	ctx := context.Background()
 
-	req := NewInferenceRequest(prompt, maxTokens, priority, reqType)
+	req := NewInferenceRequest(ctx, prompt, maxTokens, priority, reqType)
 
 	if req.ID == "" {
 		t.Error("expected non-empty ID")
@@ -94,6 +96,9 @@ func TestNewInferenceRequest(t *testing.T) {
 	if req.CreatedAt.IsZero() {
 		t.Error("expected non-zero CreatedAt")
 	}
+	if req.Ctx != ctx {
+		t.Error("expected Ctx to match the context passed to constructor")
+	}
 	if req.ResultChan == nil {
 		t.Error("expected non-nil ResultChan")
 	}
@@ -101,7 +106,6 @@ func TestNewInferenceRequest(t *testing.T) {
 		t.Errorf("expected ResultChan capacity 1, got %d", cap(req.ResultChan))
 	}
 
-	// Test EstimatedTokens calculation: len(prompt)/4 + maxTokens
 	expectedTokens := len(prompt)/4 + maxTokens
 	if req.EstimatedTokens != expectedTokens {
 		t.Errorf("expected EstimatedTokens %d, got %d", expectedTokens, req.EstimatedTokens)
@@ -109,7 +113,7 @@ func TestNewInferenceRequest(t *testing.T) {
 }
 
 func TestInferenceRequestAgeMs(t *testing.T) {
-	req := NewInferenceRequest("test", 10, PriorityNormal, RequestTypeCompletion)
+	req := NewInferenceRequest(context.Background(), "test", 10, PriorityNormal, RequestTypeCompletion)
 	
 	time.Sleep(10 * time.Millisecond)
 	
@@ -153,8 +157,8 @@ func TestInferenceRequestTokenBucket(t *testing.T) {
 }
 
 func TestNewBatch(t *testing.T) {
-	req1 := NewInferenceRequest("test1", 10, PriorityNormal, RequestTypeCompletion)
-	req2 := NewInferenceRequest("test2", 20, PriorityHigh, RequestTypeCompletion)
+	req1 := NewInferenceRequest(context.Background(), "test1", 10, PriorityNormal, RequestTypeCompletion)
+	req2 := NewInferenceRequest(context.Background(), "test2", 20, PriorityHigh, RequestTypeCompletion)
 	requests := []*InferenceRequest{req1, req2}
 	strategy := "test_strategy"
 
@@ -175,8 +179,8 @@ func TestNewBatch(t *testing.T) {
 }
 
 func TestBatchSize(t *testing.T) {
-	req1 := NewInferenceRequest("test1", 10, PriorityNormal, RequestTypeCompletion)
-	req2 := NewInferenceRequest("test2", 20, PriorityHigh, RequestTypeCompletion)
+	req1 := NewInferenceRequest(context.Background(), "test1", 10, PriorityNormal, RequestTypeCompletion)
+	req2 := NewInferenceRequest(context.Background(), "test2", 20, PriorityHigh, RequestTypeCompletion)
 	
 	batch := NewBatch([]*InferenceRequest{req1, req2}, "test")
 	
@@ -237,7 +241,7 @@ func TestBatchMaxPriority(t *testing.T) {
 		{
 			name:       "empty batch",
 			priorities: []Priority{},
-			expected:   PriorityNormal, // Default for empty batch
+			expected:   PriorityLow, // Spec: max starts at PriorityLow, empty loop returns it
 		},
 	}
 

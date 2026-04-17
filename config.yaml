@@ -5,23 +5,27 @@ server:
   write_timeout: 30s
 
 batching:
-  strategy: "queue_depth"
+  strategy: "queue_depth"            # fixed | queue_depth | latency_aware
   min_batch_size: 1
   max_batch_size: 32
   min_wait_ms: 5
   max_wait_ms: 100
   queue_depth_low_threshold: 10
   queue_depth_high_threshold: 100
-  queue_capacity: 10000
-  token_bucketing_enabled: true
+  queue_capacity: 10000              # total across the QueueMatrix; per-sub-queue cap is derived
   priority_enabled: true
+  target_p99_ms: 50.0                # used by latency_aware strategy
 
 workers:
   count: 4
-  base_latency_ms: 10
-  per_token_latency_ms: 0.5
-  latency_variance: 0.1
-  max_batch_tokens: 8192
+  max_batch_tokens: 8192             # upper bound before forwarding upstream
+
+upstream:
+  url: "http://inference-server:8000/v1/batch"
+  request_timeout: 60s
+  max_idle_conns: 100
+  max_conns_per_host: 32
+  health_path: "/health"
 
 health:
   check_interval: 5s
@@ -32,3 +36,9 @@ metrics:
   collection_interval: 100ms
   percentile_window_size: 1000
   history_retention: 1h
+  p99_smoothing_alpha: 0.3           # EWMA alpha fed to latency_aware strategy
+
+dashboard:
+  enabled: true
+  port: 8081
+  ws_push_interval: 500ms            # how often to push snapshots

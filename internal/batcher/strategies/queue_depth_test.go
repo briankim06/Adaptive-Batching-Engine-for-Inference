@@ -3,10 +3,12 @@ package strategies
 import (
 	"testing"
 	"time"
+
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 func TestQueueDepthStrategyCalculateTimeout(t *testing.T) {
-	strategy := NewQueueDepthStrategy(10, 100, 5, 100)
+	strategy := NewQueueDepthStrategy(10, 100, 5, 100, 8)
 
 	tests := []struct {
 		name       string
@@ -31,9 +33,16 @@ func TestQueueDepthStrategyCalculateTimeout(t *testing.T) {
 	}
 }
 
-func TestQueueDepthStrategyShouldFlush(t *testing.T) {
-	strategy := NewQueueDepthStrategy(10, 100, 5, 100)
-	if strategy.ShouldFlush(nil, 0) {
-		t.Error("expected ShouldFlush false")
+func TestQueueDepthStrategyShouldFlushAtMaxBatchSize(t *testing.T) {
+	strategy := NewQueueDepthStrategy(10, 100, 5, 100, 3)
+
+	if strategy.ShouldFlush(make([]*models.InferenceRequest, 2), 0) {
+		t.Error("expected ShouldFlush false below maxBatchSize")
+	}
+	if !strategy.ShouldFlush(make([]*models.InferenceRequest, 3), 0) {
+		t.Error("expected ShouldFlush true at maxBatchSize")
+	}
+	if !strategy.ShouldFlush(make([]*models.InferenceRequest, 4), 0) {
+		t.Error("expected ShouldFlush true above maxBatchSize")
 	}
 }
