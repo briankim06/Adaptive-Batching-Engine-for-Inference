@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 func TestFixedStrategyCalculateTimeout(t *testing.T) {

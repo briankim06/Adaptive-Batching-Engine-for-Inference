@@ -3,7 +3,7 @@ package strategies
 import (
 	"time"
 
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 const (

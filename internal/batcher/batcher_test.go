@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yourname/adaptive-batching-engine/internal/batcher/strategies"
-	"github.com/yourname/adaptive-batching-engine/internal/config"
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/batcher/strategies"
+	"github.com/briankim06/adaptive-batching-engine/internal/config"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 type stubStrategy struct {

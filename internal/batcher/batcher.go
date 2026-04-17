@@ -3,8 +3,8 @@ package batcher
 import (
 	"context"
 
-	"github.com/yourname/adaptive-batching-engine/internal/config"
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/config"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 type Batcher interface {

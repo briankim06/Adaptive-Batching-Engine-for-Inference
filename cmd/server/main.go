@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 	
-	"github.com/yourname/adaptive-batching-engine/internal/config"
+	"github.com/briankim06/adaptive-batching-engine/internal/config"
 )
 
 func main() {

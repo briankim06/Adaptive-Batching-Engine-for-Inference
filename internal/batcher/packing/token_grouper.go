@@ -1,6 +1,6 @@
 package packing
 
-import "github.com/yourname/adaptive-batching-engine/internal/models"
+import "github.com/briankim06/adaptive-batching-engine/internal/models"
 
 const tokenBucketCount = 6
 

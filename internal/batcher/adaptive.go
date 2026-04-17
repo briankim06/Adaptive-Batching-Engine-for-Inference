@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yourname/adaptive-batching-engine/internal/batcher/packing"
-	"github.com/yourname/adaptive-batching-engine/internal/batcher/strategies"
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/batcher/packing"
+	"github.com/briankim06/adaptive-batching-engine/internal/batcher/strategies"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 type AdaptiveBatcher struct {

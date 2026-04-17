@@ -3,7 +3,7 @@ package packing
 import (
 	"testing"
 
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 func TestPriorityQueueOrderAndDepth(t *testing.T) {

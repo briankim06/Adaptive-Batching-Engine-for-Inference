@@ -1,4 +1,4 @@
-module github.com/yourname/adaptive-batching-engine
+module github.com/briankim06/adaptive-batching-engine
 
 go 1.25.6
 

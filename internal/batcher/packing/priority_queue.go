@@ -3,7 +3,7 @@ package packing
 import (
 	"sync"
 
-	"github.com/yourname/adaptive-batching-engine/internal/models"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 type PriorityQueue struct {
