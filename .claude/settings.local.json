@@ -4,7 +4,10 @@
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(go get *)",
-      "Bash(go vet *)"
+      "Bash(go vet *)",
+      "Bash(go list *)",
+      "Bash(timeout 3 go run ./cmd/server/)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }
