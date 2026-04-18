@@ -1,4 +1,4 @@
-# Phase 6 — Dashboard
+g# Phase 6 — Dashboard
 
 A single-page HTML/JS/CSS application that connects to the API server's
 WebSocket endpoint and renders real-time system metrics. A minimal
