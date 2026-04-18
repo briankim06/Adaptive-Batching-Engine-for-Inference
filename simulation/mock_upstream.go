@@ -15,27 +15,48 @@ import (
 // MockUpstreamConfig parameterises the in-process mock inference server.
 // Latency is drawn from:
 //
-//	sleep = baseLatencyMs + perTokenLatencyMs*totalTokens + N(0, baseLatencyMs*variance)
+//	sleep = BaseLatencyMs
+//	      + PerTokenLatencyMs    * totalTokens             // legacy linear-in-sum term
+//	      + PerMaxTokenLatencyMs * maxTokensInBatch        // GPU-time ~ max item
+//	      + PerItemLatencyMs     * batchSize               // per-item scheduling cost
+//	      + N(0, BaseLatencyMs*LatencyVariance)
 //
-// clamped to >= 1ms. Each batch POST is failed with probability
-// FailureRate (503 response). A FailureRate of 1.0 also flips /health
-// to 500 so the pool's ping loop can mark the upstream unhealthy.
+// clamped to >= 1ms. The legacy `PerTokenLatencyMs*totalTokens` term is
+// retained so existing callers (integration tests) keep their observed
+// latency unchanged when the new fields are left at their zero value.
+// Callers that want a realistic batch-economy model (sub-linear in
+// batch size) set PerMaxTokenLatencyMs and PerItemLatencyMs instead of
+// PerTokenLatencyMs — see DefaultMockUpstreamConfig.
+//
+// Each batch POST is failed with probability FailureRate (503 response).
+// A FailureRate of 1.0 also flips /health to 500 so the pool's ping
+// loop can mark the upstream unhealthy.
 type MockUpstreamConfig struct {
-	BaseLatencyMs     float64
-	PerTokenLatencyMs float64
-	LatencyVariance   float64
-	FailureRate       float64
+	BaseLatencyMs        float64
+	PerTokenLatencyMs    float64
+	PerMaxTokenLatencyMs float64
+	PerItemLatencyMs     float64
+	LatencyVariance      float64
+	FailureRate          float64
 }
 
 // DefaultMockUpstreamConfig is the latency profile used by the simulator
-// when the caller does not supply values. Picked to keep simulations
-// short without being so cheap they hide batching differences.
+// when the caller does not supply values. Tuned so larger batches are
+// cheaper per-request (batch economy), which is what makes adaptive
+// batching strategies measurably out-perform a fixed-timeout strategy.
+// Approximate latencies at 256 tokens/request:
+//
+//	batch=1  -> ~12 ms  (12.0 ms/req)
+//	batch=8  -> ~22 ms  ( 2.8 ms/req)
+//	batch=32 -> ~46 ms  ( 1.4 ms/req)
 func DefaultMockUpstreamConfig() MockUpstreamConfig {
 	return MockUpstreamConfig{
-		BaseLatencyMs:     15,
-		PerTokenLatencyMs: 0.2,
-		LatencyVariance:   0.1,
-		FailureRate:       0,
+		BaseLatencyMs:        8,
+		PerTokenLatencyMs:    0, // prefer max-token scaling; see struct doc
+		PerMaxTokenLatencyMs: 0.015,
+		PerItemLatencyMs:     0.8,
+		LatencyVariance:      0.1,
+		FailureRate:          0,
 	}
 }
 
@@ -140,7 +161,7 @@ func (m *MockUpstream) handleBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sleep := m.computeLatency(batch.TotalTokens())
+	sleep := m.computeLatency(len(batch.Requests), batch.TotalTokens(), maxBatchTokens(&batch))
 	select {
 	case <-r.Context().Done():
 		// Client (ProxyWorker) cancelled; no point writing a response.
@@ -178,15 +199,38 @@ func (m *MockUpstream) rollFailure() bool {
 	return m.rand.Float64() < m.cfg.FailureRate
 }
 
-func (m *MockUpstream) computeLatency(totalTokens int) time.Duration {
+func (m *MockUpstream) computeLatency(batchSize, totalTokens, maxTokensInBatch int) time.Duration {
 	m.mu.Lock()
 	jitter := m.rand.NormFloat64() * m.cfg.BaseLatencyMs * m.cfg.LatencyVariance
 	m.mu.Unlock()
-	ms := m.cfg.BaseLatencyMs + m.cfg.PerTokenLatencyMs*float64(totalTokens) + jitter
+	ms := m.cfg.BaseLatencyMs +
+		m.cfg.PerTokenLatencyMs*float64(totalTokens) +
+		m.cfg.PerMaxTokenLatencyMs*float64(maxTokensInBatch) +
+		m.cfg.PerItemLatencyMs*float64(batchSize) +
+		jitter
 	if ms < 1 {
 		ms = 1
 	}
 	return time.Duration(ms * float64(time.Millisecond))
+}
+
+// maxBatchTokens returns the largest EstimatedTokens across the batch's
+// requests, or 0 for an empty batch. Used by the batch-economy latency
+// model so batch cost scales with the biggest item, not the sum.
+func maxBatchTokens(batch *models.Batch) int {
+	if batch == nil {
+		return 0
+	}
+	max := 0
+	for _, r := range batch.Requests {
+		if r == nil {
+			continue
+		}
+		if r.EstimatedTokens > max {
+			max = r.EstimatedTokens
+		}
+	}
+	return max
 }
 
 // fakeResult returns a shape appropriate for the request type: a short

@@ -14,14 +14,26 @@ type Scenario struct {
 	Duration  time.Duration
 }
 
-const scenarioDuration = 60 * time.Second
+const (
+	scenarioDuration = 60 * time.Second
+	// steadyRequestDeadline bounds per-request wait for scenarios that
+	// operate near saturation. P99 under `fixed` is expected to sit well
+	// below this (~80–150ms), so the deadline effectively never fires
+	// under nominal load but does clip the tail under overload.
+	steadyRequestDeadline = 400 * time.Millisecond
+)
 
-// SteadyState — constant 100 RPS for 60s, default mix.
+// SteadyState — constant 1200 RPS for 60s, default mix. Sized to run at
+// ~80–90% of the mock upstream's batched capacity so adaptive
+// strategies can demonstrate measurable P99 improvements over `fixed`.
 func SteadyState() Scenario {
-	cfg := GeneratorConfig{Duration: scenarioDuration}
+	cfg := GeneratorConfig{
+		Duration:        scenarioDuration,
+		RequestDeadline: steadyRequestDeadline,
+	}
 	return Scenario{
 		Name:      "steady_state",
-		Generator: NewConstantRateGenerator(100, cfg),
+		Generator: NewConstantRateGenerator(1200, cfg),
 		Duration:  scenarioDuration,
 	}
 }
@@ -36,15 +48,21 @@ func RampUp() Scenario {
 	}
 }
 
-// SpikeTest — 100 RPS base with a single 10× burst at t=30s for 10s.
+// SpikeTest — 800 RPS base with a single 3× burst at t=30s for 5s.
 // The bursty generator repeats (BurstInterval + BurstDuration), so
-// picking BurstInterval=30s and BurstDuration=10s means exactly one
-// burst fires within the 60s scenario duration (at t=30s).
+// picking BurstInterval=30s and BurstDuration=5s means exactly one
+// burst fires within the 60s scenario duration (at t=30s) and leaves
+// 25s of recovery time. A 3× multiplier keeps the spike stressful but
+// recoverable — higher multipliers (e.g. 5×) overwhelm the worker pool
+// so badly that batching strategy choice becomes irrelevant.
 func SpikeTest() Scenario {
-	cfg := GeneratorConfig{Duration: scenarioDuration}
+	cfg := GeneratorConfig{
+		Duration:        scenarioDuration,
+		RequestDeadline: steadyRequestDeadline,
+	}
 	return Scenario{
 		Name:      "spike_test",
-		Generator: NewBurstyGenerator(100, 10, 30*time.Second, 10*time.Second, cfg),
+		Generator: NewBurstyGenerator(800, 3, 30*time.Second, 5*time.Second, cfg),
 		Duration:  scenarioDuration,
 	}
 }

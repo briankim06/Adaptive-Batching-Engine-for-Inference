@@ -5,26 +5,26 @@ server:
   write_timeout: 30s
 
 batching:
-  strategy: "queue_depth"            # fixed | queue_depth | latency_aware
+  strategy: "latency_aware"            # fixed | queue_depth | latency_aware
   min_batch_size: 1
-  max_batch_size: 32
+  max_batch_size: 32                  # cap so fixed can't accidentally amass giant batches
   min_wait_ms: 5
-  max_wait_ms: 100
-  queue_depth_low_threshold: 10
-  queue_depth_high_threshold: 100
-  queue_capacity: 10000              # total across the QueueMatrix; per-sub-queue cap is derived
+  max_wait_ms: 40                     # dominant-latency knob for fixed; latency_aware scales this
+  queue_depth_low_threshold: 8        # sized to typical steady-state depth so queue_depth actually engages
+  queue_depth_high_threshold: 80
+  queue_capacity: 200000              # total across the QueueMatrix; per-sub-queue cap is derived
   priority_enabled: true
-  target_p99_ms: 50.0                # used by latency_aware strategy
+  target_p99_ms: 60.0                 # setpoint for latency_aware; steady-state is expected to sit near this
 
 workers:
-  count: 4
+  count: 8
   max_batch_tokens: 8192             # upper bound before forwarding upstream
 
 upstream:
   url: "http://inference-server:8000/v1/batch"
-  request_timeout: 60s
+  request_timeout: 5s
   max_idle_conns: 100
-  max_conns_per_host: 32
+  max_conns_per_host: 24
   health_path: "/health"
 
 health:

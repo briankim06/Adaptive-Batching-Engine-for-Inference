@@ -51,6 +51,13 @@ type GeneratorConfig struct {
 	// bimodal mix used by the long_tail scenario (70% short, 30% long).
 	BimodalLongTail bool
 
+	// RequestDeadline, when > 0, wraps each generated request's context
+	// with a per-request timeout. Requests that exceed this deadline
+	// (queue wait + upstream processing) are recorded as errors by the
+	// Runner. Zero means no per-request deadline — errors only accrue
+	// from upstream failures and scenario-end cutoff.
+	RequestDeadline time.Duration
+
 	// Rand is the random source. Tests may set this; production leaves it
 	// nil and the generators use rand.New(rand.NewSource(time.Now())) on
 	// first use.
@@ -293,7 +300,16 @@ func randomRequest(reqCtx context.Context, cfg GeneratorConfig) *models.Inferenc
 	priority := samplePriority(cfg)
 	tokens := sampleTokens(cfg)
 	prompt := buildPrompt(cfg.Rand, tokens)
-	return models.NewInferenceRequest(reqCtx, prompt, tokens, priority, reqType)
+	ctx := reqCtx
+	if cfg.RequestDeadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(reqCtx, cfg.RequestDeadline)
+		// Release the timer as soon as the deadline or parent cancel
+		// fires; AfterFunc runs once ctx is Done, avoiding a per-request
+		// goroutine that would park for the full deadline.
+		context.AfterFunc(ctx, cancel)
+	}
+	return models.NewInferenceRequest(ctx, prompt, tokens, priority, reqType)
 }
 
 func samplePriority(cfg GeneratorConfig) models.Priority {

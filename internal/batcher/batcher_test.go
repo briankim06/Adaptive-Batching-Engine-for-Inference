@@ -286,6 +286,113 @@ func TestAdaptiveBatcherUpdateStrategyMetricsFeedsStrategy(t *testing.T) {
 	}
 }
 
+// TestAdaptiveBatcherAccumulatesWithinWindow proves the two-phase
+// formBatch actually holds a batch open for the strategy's timeout
+// instead of draining on every EventChan wake. We submit 8 same-key
+// requests back-to-back and expect one batch ≥ 4 to form within the
+// 50ms accumulation window — the pre-refactor behaviour would yield
+// ~8 micro-batches of size 1.
+func TestAdaptiveBatcherAccumulatesWithinWindow(t *testing.T) {
+	cfg := BatcherConfig{MaxBatchSize: 16, QueueCapacity: 256, BatchChanSize: 4}
+	batcher, chans := newTestBatcher(t, cfg, &stubStrategy{timeout: 50 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go batcher.Start(ctx)
+
+	for i := 0; i < 8; i++ {
+		req := models.NewInferenceRequest(context.Background(), "x", 0,
+			models.PriorityNormal, models.RequestTypeCompletion)
+		if err := batcher.Submit(context.Background(), req); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+	}
+
+	select {
+	case batch := <-chans[models.PriorityNormal]:
+		if batch == nil {
+			t.Fatal("expected non-nil batch")
+		}
+		if batch.Size() < 4 {
+			t.Fatalf("expected accumulation to yield batch ≥ 4, got size %d — formBatch is not holding a window open", batch.Size())
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for accumulated batch")
+	}
+
+	cancel()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer stopCancel()
+	_ = batcher.Stop(stopCtx)
+}
+
+// TestAdaptiveBatcherPreemptsOnHigherPriority asserts that a Critical
+// request arriving mid-accumulation breaks the window early: the lower-
+// priority batch is flushed with what it has, and the next formBatch
+// iteration dispatches the Critical item without waiting the full
+// timeout. Guards I8 at batch-formation time.
+func TestAdaptiveBatcherPreemptsOnHigherPriority(t *testing.T) {
+	cfg := BatcherConfig{MaxBatchSize: 16, QueueCapacity: 256, BatchChanSize: 4}
+	// 80ms accumulation window — long enough that the Normal batch is
+	// genuinely sitting in Phase 2 when the Critical arrives at t=30ms,
+	// but short enough that the Critical's own accumulation window also
+	// closes well within the test deadline.
+	batcher, chans := newTestBatcher(t, cfg, &stubStrategy{timeout: 80 * time.Millisecond})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go batcher.Start(ctx)
+
+	// Seed the Normal sub-queue so formBatch is sitting in accumulation.
+	for i := 0; i < 2; i++ {
+		req := models.NewInferenceRequest(context.Background(), "x", 0,
+			models.PriorityNormal, models.RequestTypeCompletion)
+		if err := batcher.Submit(context.Background(), req); err != nil {
+			t.Fatalf("seed submit %d: %v", i, err)
+		}
+	}
+
+	// Give the batcher a moment to enter Phase 2 for the Normal batch.
+	// Short enough to stay well inside the 80ms window.
+	time.Sleep(20 * time.Millisecond)
+
+	critical := models.NewInferenceRequest(context.Background(), "c", 0,
+		models.PriorityCritical, models.RequestTypeCompletion)
+	if err := batcher.Submit(context.Background(), critical); err != nil {
+		t.Fatalf("critical submit: %v", err)
+	}
+
+	// Budget: Normal preempts at ~t=20ms, Critical's own 80ms window
+	// closes by ~t=100ms, plus slack for scheduling.
+	deadline := time.After(500 * time.Millisecond)
+	var gotNormal, gotCritical bool
+	for !(gotNormal && gotCritical) {
+		select {
+		case b := <-chans[models.PriorityNormal]:
+			if b == nil {
+				t.Fatal("nil normal batch")
+			}
+			gotNormal = true
+		case b := <-chans[models.PriorityCritical]:
+			if b == nil {
+				t.Fatal("nil critical batch")
+			}
+			if b.Size() != 1 {
+				t.Fatalf("expected critical batch of size 1, got %d", b.Size())
+			}
+			gotCritical = true
+		case <-deadline:
+			t.Fatalf("preemption timed out (normal=%v critical=%v) — window did not break on higher-priority arrival",
+				gotNormal, gotCritical)
+		}
+	}
+
+	cancel()
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer stopCancel()
+	_ = batcher.Stop(stopCtx)
+}
+
 type metricsObservingStrategy struct {
 	timeout  time.Duration
 	observed *strategies.StrategyMetrics

@@ -121,6 +121,47 @@ func (qm *QueueMatrix) Drain(maxBatchSize int) ([]*models.InferenceRequest, mode
 	return nil, models.PriorityNormal, models.RequestTypeCompletion, 0
 }
 
+// DrainFrom pulls up to max items from the specific sub-queue identified
+// by (priority, requestType, bucket). Used by the batcher's accumulation
+// phase to keep filling a pinned sub-queue while preserving invariant
+// I9 (batches homogeneous by construction). Returns an empty slice when
+// the target sub-queue is empty; never blocks. An out-of-range bucket is
+// clamped via bucketIndex so callers can pass the raw bucket field
+// returned by Drain.
+func (qm *QueueMatrix) DrainFrom(priority models.Priority, rt models.RequestType, bucket, max int) []*models.InferenceRequest {
+	if max <= 0 {
+		return nil
+	}
+	p := priorityIndex(priority)
+	rtIdx := typeIndex(rt)
+	b := bucketIndex(bucket)
+	ch := qm.queues[p][rtIdx][b]
+	if len(ch) == 0 {
+		return nil
+	}
+	return qm.drainSubqueue(ch, max)
+}
+
+// HasHigherPriorityThan reports whether any sub-queue at a priority
+// strictly higher than p currently holds at least one request. Used by
+// the batcher's accumulation phase to preempt a lower-priority batch
+// when a higher-priority request arrives, preserving the priority
+// ordering guarantee of I8 at batch-formation time as well as at
+// dispatch time.
+func (qm *QueueMatrix) HasHigherPriorityThan(p models.Priority) bool {
+	pIdx := priorityIndex(p)
+	for higher := pIdx + 1; higher < numPriorities; higher++ {
+		for rt := 0; rt < numRequestTypes; rt++ {
+			for b := 0; b < numTokenBuckets; b++ {
+				if len(qm.queues[higher][rt][b]) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // DrainAll empties every sub-queue; used during shutdown so the batcher
 // can fan ErrShuttingDown out to every stranded ResultChan.
 func (qm *QueueMatrix) DrainAll() []*models.InferenceRequest {
@@ -140,6 +181,19 @@ func (qm *QueueMatrix) DrainAll() []*models.InferenceRequest {
 // loop. It is buffered with capacity 1 so repeated submits coalesce into a
 // single wake.
 func (qm *QueueMatrix) EventChan() <-chan struct{} { return qm.eventChan }
+
+// Signal performs a non-blocking send on eventChan so a waiter wakes on
+// the next select. Safe to call from any goroutine; a full buffer is a
+// no-op (coalesced with an already-pending wake). Used by the batcher
+// to re-arm the wake hint after it consumed a signal but left queued
+// work behind (e.g. preempted by higher-priority arrival, or accumulation
+// window expired before the sub-queue fully drained).
+func (qm *QueueMatrix) Signal() {
+	select {
+	case qm.eventChan <- struct{}{}:
+	default:
+	}
+}
 
 // Depth returns the live total count across all sub-queues (O(1)).
 func (qm *QueueMatrix) Depth() int64 { return qm.depth.Load() }

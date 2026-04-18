@@ -185,6 +185,83 @@ func TestQueueMatrixDrainAllRecoversStranded(t *testing.T) {
 	}
 }
 
+// TestQueueMatrixDrainFrom covers the targeted single-sub-queue drain
+// used by the accumulation phase of formBatch. It must: (a) pull only
+// from the requested (priority, requestType, bucket); (b) respect the
+// max argument; (c) update Depth; (d) return nil for an empty target
+// without touching other sub-queues.
+func TestQueueMatrixDrainFrom(t *testing.T) {
+	qm := NewQueueMatrix(480)
+
+	// Three same-key items (Normal, Completion, bucket 0) — the target.
+	for i := 0; i < 3; i++ {
+		_ = qm.Submit(makeReq(models.PriorityNormal, models.RequestTypeCompletion, 50))
+	}
+	// One item in a different bucket (same priority + type).
+	_ = qm.Submit(makeReq(models.PriorityNormal, models.RequestTypeCompletion, 800)) // bucket 2
+	// One item at a higher priority — must remain untouched.
+	_ = qm.Submit(makeReq(models.PriorityHigh, models.RequestTypeCompletion, 50))
+
+	drained := qm.DrainFrom(models.PriorityNormal, models.RequestTypeCompletion, 0, 2)
+	if len(drained) != 2 {
+		t.Fatalf("expected 2 items capped by max, got %d", len(drained))
+	}
+	if qm.Depth() != 3 {
+		t.Fatalf("expected depth 3 after partial DrainFrom, got %d", qm.Depth())
+	}
+
+	// Remaining target item.
+	drained = qm.DrainFrom(models.PriorityNormal, models.RequestTypeCompletion, 0, 16)
+	if len(drained) != 1 {
+		t.Fatalf("expected 1 residual item, got %d", len(drained))
+	}
+
+	// Target empty — returns nil, leaves other buckets intact.
+	if got := qm.DrainFrom(models.PriorityNormal, models.RequestTypeCompletion, 0, 16); got != nil {
+		t.Fatalf("expected nil on empty target, got %v", got)
+	}
+	if qm.Depth() != 2 {
+		t.Fatalf("expected depth 2 (other sub-queues), got %d", qm.Depth())
+	}
+
+	// Max <= 0 is a no-op.
+	if got := qm.DrainFrom(models.PriorityHigh, models.RequestTypeCompletion, 0, 0); got != nil {
+		t.Fatalf("expected nil on max=0, got %v", got)
+	}
+	if qm.Depth() != 2 {
+		t.Fatalf("max=0 must not mutate depth, got %d", qm.Depth())
+	}
+}
+
+// TestQueueMatrixHasHigherPriorityThan asserts the preemption check
+// scans only strictly-higher priority sub-queues.
+func TestQueueMatrixHasHigherPriorityThan(t *testing.T) {
+	qm := NewQueueMatrix(480)
+
+	if qm.HasHigherPriorityThan(models.PriorityLow) {
+		t.Fatal("empty matrix must report no higher-priority work")
+	}
+
+	_ = qm.Submit(makeReq(models.PriorityNormal, models.RequestTypeCompletion, 50))
+	if !qm.HasHigherPriorityThan(models.PriorityLow) {
+		t.Fatal("expected Normal to count as higher than Low")
+	}
+	if qm.HasHigherPriorityThan(models.PriorityNormal) {
+		t.Fatal("Normal is not strictly higher than Normal")
+	}
+	if qm.HasHigherPriorityThan(models.PriorityHigh) {
+		t.Fatal("no items at High or Critical yet")
+	}
+
+	_ = qm.Submit(makeReq(models.PriorityCritical, models.RequestTypeEmbedding, 4000))
+	if !qm.HasHigherPriorityThan(models.PriorityHigh) {
+		t.Fatal("expected Critical to count as higher than High")
+	}
+	if qm.HasHigherPriorityThan(models.PriorityCritical) {
+		t.Fatal("nothing is strictly higher than Critical")
+	}
+}
+
 // TestQueueMatrixSubmitRoutesToCorrectSubQueue exercises every
 // (priority, type, bucket) triple: 4 priorities × 2 types × 6 buckets = 48
 // cases. For each triple, a request with matching fields is submitted and

@@ -201,32 +201,105 @@ func (b *AdaptiveBatcher) shouldExit(ctx context.Context) bool {
 	}
 }
 
-// formBatch waits on eventChan / timer / ctx, then drains the highest-
-// priority non-empty sub-queue. The returned batch is homogeneous by
-// construction and carries the priority reported by QueueMatrix.Drain.
+// formBatch assembles one homogeneous batch using a two-phase loop.
+//
+// Phase 1 blocks until the first request arrives (or shutdown). The
+// earlier single-phase design used strategy.CalculateTimeout here,
+// which caused every EventChan wake to trigger an immediate drain and
+// produced micro-batches regardless of strategy. See
+// docs/spec/02-batching.md §2.4.
+//
+// Phase 2 opens an accumulation window sized by strategy.CalculateTimeout
+// and keeps pulling from the pinned sub-queue until any of: batch full,
+// strategy.ShouldFlush, higher-priority arrival (preemption), window
+// expiry, or shutdown. Homogeneity (I9) is preserved because DrainFrom
+// reads from exactly one sub-queue. Priority fairness (I8) is preserved
+// by the HasHigherPriorityThan preemption check.
 func (b *AdaptiveBatcher) formBatch(ctx context.Context) (*models.Batch, models.Priority) {
 	strategy := b.activeStrategy()
-	timeout := b.nextTimeout(strategy)
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// Re-arm the wake hint on every exit path when the queue still has
+	// work. EventChan is cap-1 coalesced, so a preempted accumulation
+	// or a timer-expired window can otherwise leave the next formBatch
+	// iteration blocked on an empty EventChan despite pending items.
+	defer func() {
+		if b.qm.Depth() > 0 {
+			b.qm.Signal()
+		}
+	}()
 
 	select {
 	case <-b.qm.EventChan():
-	case <-timer.C:
 	case <-ctx.Done():
+		return nil, 0
+	case <-b.stopCh:
 		return nil, 0
 	}
 
-	reqs, priority, _, _ := b.qm.Drain(b.cfg.MaxBatchSize)
+	reqs, priority, rt, bucket := b.qm.Drain(b.cfg.MaxBatchSize)
 	if len(reqs) == 0 {
 		return nil, 0
 	}
+
+	if len(reqs) < b.cfg.MaxBatchSize && !b.strategyShouldFlush(strategy, reqs) {
+		reqs = b.accumulate(ctx, strategy, reqs, priority, rt, bucket)
+	}
+
 	name := ""
 	if strategy != nil {
 		name = strategy.Name()
 	}
 	return models.NewBatch(reqs, name), priority
+}
+
+// accumulate runs Phase 2: top up the pinned sub-queue until the
+// strategy's timeout expires or a flush condition fires. Extracted from
+// formBatch purely to keep the control flow readable.
+func (b *AdaptiveBatcher) accumulate(
+	ctx context.Context,
+	strategy strategies.Strategy,
+	reqs []*models.InferenceRequest,
+	priority models.Priority,
+	rt models.RequestType,
+	bucket int,
+) []*models.InferenceRequest {
+	timer := time.NewTimer(b.nextTimeout(strategy))
+	defer timer.Stop()
+
+	for len(reqs) < b.cfg.MaxBatchSize {
+		if more := b.qm.DrainFrom(priority, rt, bucket, b.cfg.MaxBatchSize-len(reqs)); len(more) > 0 {
+			reqs = append(reqs, more...)
+			if len(reqs) >= b.cfg.MaxBatchSize {
+				return reqs
+			}
+		}
+		if b.strategyShouldFlush(strategy, reqs) {
+			return reqs
+		}
+		if b.qm.HasHigherPriorityThan(priority) {
+			return reqs
+		}
+		select {
+		case <-b.qm.EventChan():
+			// Loop and DrainFrom to pick up same-sub-queue arrivals.
+		case <-timer.C:
+			return reqs
+		case <-ctx.Done():
+			return reqs
+		case <-b.stopCh:
+			return reqs
+		}
+	}
+	return reqs
+}
+
+// strategyShouldFlush is a nil-safe wrapper around Strategy.ShouldFlush
+// so formBatch / accumulate don't have to guard each call site.
+func (b *AdaptiveBatcher) strategyShouldFlush(strategy strategies.Strategy, reqs []*models.InferenceRequest) bool {
+	if strategy == nil {
+		return true
+	}
+	return strategy.ShouldFlush(reqs, int(b.qm.Depth()))
 }
 
 func (b *AdaptiveBatcher) dispatch(ctx context.Context, batch *models.Batch, priority models.Priority) bool {
