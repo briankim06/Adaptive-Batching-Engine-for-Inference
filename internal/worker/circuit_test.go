@@ -1,9 +1,19 @@
 package worker
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/briankim06/adaptive-batching-engine/internal/config"
+	"github.com/briankim06/adaptive-batching-engine/internal/models"
 )
 
 func TestCircuitBreakerStartsClosed(t *testing.T) {
@@ -120,6 +130,98 @@ func TestCircuitBreakerConcurrentSafety(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestCircuitBreakerPartialFailureScope guards I3: per-request error fields
+// in a 200-OK upstream body are application-level, not transport-level —
+// they MUST NOT call RecordFailure. Contrast: 5xx responses do.
+func TestCircuitBreakerPartialFailureScope(t *testing.T) {
+	const rounds = 5
+
+	t.Run("200 with per-request errors keeps breaker closed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var batch models.Batch
+			if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			results := make([]models.RequestResult, len(batch.Requests))
+			for i, req := range batch.Requests {
+				results[i] = models.RequestResult{
+					RequestID: req.ID,
+					Error:     errors.New("application-level failure"),
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(results)
+		}))
+		defer srv.Close()
+
+		cb := NewCircuitBreaker(rounds, time.Hour)
+		w := newProcessTestWorker(t, srv.URL, cb)
+
+		for i := 0; i < rounds; i++ {
+			req := models.NewInferenceRequest(context.Background(), "p", 4, models.PriorityNormal, models.RequestTypeCompletion)
+			batch := models.NewBatch([]*models.InferenceRequest{req}, "test")
+			w.process(context.Background(), batch)
+			<-req.ResultChan
+		}
+
+		if cb.State() != CircuitClosed {
+			t.Fatalf("expected breaker Closed after %d partial-failure rounds, got %v", rounds, cb.State())
+		}
+	})
+
+	t.Run("5xx responses trip breaker", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		cb := NewCircuitBreaker(rounds, time.Hour)
+		w := newProcessTestWorker(t, srv.URL, cb)
+
+		for i := 0; i < rounds; i++ {
+			req := models.NewInferenceRequest(context.Background(), "p", 4, models.PriorityNormal, models.RequestTypeCompletion)
+			batch := models.NewBatch([]*models.InferenceRequest{req}, "test")
+			w.process(context.Background(), batch)
+			<-req.ResultChan
+		}
+
+		if cb.State() != CircuitOpen {
+			t.Fatalf("expected breaker Open after %d 5xx rounds, got %v", rounds, cb.State())
+		}
+	})
+}
+
+func newProcessTestWorker(t *testing.T, upstreamURL string, cb *CircuitBreaker) *ProxyWorker {
+	t.Helper()
+	upCfg := config.UpstreamConfig{
+		URL:             upstreamURL,
+		RequestTimeout:  5 * time.Second,
+		MaxIdleConns:    4,
+		MaxConnsPerHost: 4,
+		HealthPath:      "/health",
+	}
+	unhealthy := &atomic.Bool{}
+	bufPool := &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	chans := [4]chan *models.Batch{}
+	for i := range chans {
+		chans[i] = make(chan *models.Batch, 1)
+	}
+	var recv [4]<-chan *models.Batch
+	for i, ch := range chans {
+		recv[i] = ch
+	}
+	return NewProxyWorker(
+		WorkerConfig{ID: "worker-i3-scope", MaxBatchTokens: 1024},
+		upCfg,
+		&http.Client{Timeout: 5 * time.Second},
+		cb,
+		unhealthy,
+		bufPool,
+		recv,
+	)
 }
 
 func TestCircuitStateString(t *testing.T) {

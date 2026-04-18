@@ -120,6 +120,90 @@ func TestLatencyAwareNilBase(t *testing.T) {
 	}
 }
 
+// TestLatencyAwareConvergenceDownward exercises the spec'd downward
+// convergence: with sustained P99 = 2× target, multiplier monotonically
+// decreases and clamps at 0.5.
+func TestLatencyAwareConvergenceDownward(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 50)
+
+	prev := strategy.Multiplier()
+	if prev != 1.0 {
+		t.Fatalf("expected initial multiplier 1.0, got %v", prev)
+	}
+
+	monotonic := true
+	var clampedAt int
+	for i := 0; i < 500; i++ {
+		_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 100, TargetP99Ms: 50})
+		curr := strategy.Multiplier()
+		// Strictly decreasing until clamp; equality once clamped.
+		if curr > prev+1e-12 {
+			monotonic = false
+			break
+		}
+		if curr == 0.5 && clampedAt == 0 {
+			clampedAt = i + 1
+		}
+		prev = curr
+	}
+	if !monotonic {
+		t.Fatalf("multiplier was not monotonically non-increasing under sustained over-target")
+	}
+	if got := strategy.Multiplier(); got != 0.5 {
+		t.Fatalf("expected multiplier clamped at 0.5, got %v", got)
+	}
+
+	// Returned timeout approaches base * 0.5 = 50ms.
+	timeout := strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 100, TargetP99Ms: 50})
+	if timeout != 50*time.Millisecond {
+		t.Fatalf("expected timeout 50ms after lower clamp, got %v", timeout)
+	}
+}
+
+// TestLatencyAwareConvergenceUpward exercises the upward branch: P99 =
+// 0.5× target → multiplier rises and clamps at 2.0.
+func TestLatencyAwareConvergenceUpward(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 50)
+
+	prev := strategy.Multiplier()
+	monotonic := true
+	for i := 0; i < 500; i++ {
+		_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 25, TargetP99Ms: 50})
+		curr := strategy.Multiplier()
+		if curr < prev-1e-12 {
+			monotonic = false
+			break
+		}
+		prev = curr
+	}
+	if !monotonic {
+		t.Fatalf("multiplier was not monotonically non-decreasing under sustained under-target")
+	}
+	if got := strategy.Multiplier(); got != 2.0 {
+		t.Fatalf("expected multiplier clamped at 2.0, got %v", got)
+	}
+	timeout := strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 25, TargetP99Ms: 50})
+	if timeout != 200*time.Millisecond {
+		t.Fatalf("expected timeout 200ms after upper clamp, got %v", timeout)
+	}
+}
+
+// TestLatencyAwareStability: when measured P99 == target, errRatio is 0
+// so the multiplier stays glued to its starting value (1.0).
+func TestLatencyAwareStability(t *testing.T) {
+	base := &stubStrategy{timeout: 100 * time.Millisecond}
+	strategy := NewLatencyAwareStrategy(base, 0.05, 50)
+
+	for i := 0; i < 200; i++ {
+		_ = strategy.CalculateTimeout(0, &StrategyMetrics{P99LatencyMs: 50, TargetP99Ms: 50})
+	}
+	if diff := math.Abs(strategy.Multiplier() - 1.0); diff > 1e-9 {
+		t.Fatalf("expected multiplier ~1.0 under at-target conditions, got %v (diff=%v)", strategy.Multiplier(), diff)
+	}
+}
+
 func TestLatencyAwareConcurrentCalculateTimeout(t *testing.T) {
 	base := &stubStrategy{timeout: 100 * time.Millisecond}
 	strategy := NewLatencyAwareStrategy(base, 0.01, 100)

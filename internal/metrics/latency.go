@@ -74,30 +74,34 @@ func (lt *LatencyTracker) materializeLoop(ctx context.Context, interval time.Dur
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			lt.mu.RLock()
-			snap := make([]float64, len(lt.samples))
-			copy(snap, lt.samples)
-			lt.mu.RUnlock()
-
-			if len(snap) == 0 {
-				continue
-			}
-			sort.Float64s(snap)
-			raw99 := pctile(snap, 99)
-			lt.p50.Store(math.Float64bits(pctile(snap, 50)))
-			lt.p90.Store(math.Float64bits(pctile(snap, 90)))
-			lt.p99.Store(math.Float64bits(raw99))
-			lt.p999.Store(math.Float64bits(pctile(snap, 99.9)))
-
-			if !lt.seeded.Load() {
-				lt.p99Smoothed.Store(math.Float64bits(raw99))
-				lt.seeded.Store(true)
-			} else {
-				prev := math.Float64frombits(lt.p99Smoothed.Load())
-				smoothed := lt.alpha*raw99 + (1-lt.alpha)*prev
-				lt.p99Smoothed.Store(math.Float64bits(smoothed))
-			}
+			lt.materialize()
 		}
+	}
+}
+
+func (lt *LatencyTracker) materialize() {
+	lt.mu.RLock()
+	snap := make([]float64, len(lt.samples))
+	copy(snap, lt.samples)
+	lt.mu.RUnlock()
+
+	if len(snap) == 0 {
+		return
+	}
+	sort.Float64s(snap)
+	raw99 := pctile(snap, 99)
+	lt.p50.Store(math.Float64bits(pctile(snap, 50)))
+	lt.p90.Store(math.Float64bits(pctile(snap, 90)))
+	lt.p99.Store(math.Float64bits(raw99))
+	lt.p999.Store(math.Float64bits(pctile(snap, 99.9)))
+
+	if !lt.seeded.Load() {
+		lt.p99Smoothed.Store(math.Float64bits(raw99))
+		lt.seeded.Store(true)
+	} else {
+		prev := math.Float64frombits(lt.p99Smoothed.Load())
+		smoothed := lt.alpha*raw99 + (1-lt.alpha)*prev
+		lt.p99Smoothed.Store(math.Float64bits(smoothed))
 	}
 }
 

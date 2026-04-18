@@ -2,6 +2,9 @@ package models
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -137,12 +140,14 @@ func TestInferenceRequestTokenBucket(t *testing.T) {
 		{"bucket 1 (<=512)", 200, 1},
 		{"bucket 1 exact", 512, 1},
 		{"bucket 2 (<=1024)", 800, 2},
+		{"bucket 2 (1000 → 2 from spec)", 1000, 2},
 		{"bucket 2 exact", 1024, 2},
 		{"bucket 3 (<=2048)", 1500, 3},
 		{"bucket 3 exact", 2048, 3},
 		{"bucket 4 (<=4096)", 3000, 4},
 		{"bucket 4 exact", 4096, 4},
 		{"overflow bucket", 5000, 5},
+		{"overflow 10000 → 5 from spec", 10000, 5},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +309,35 @@ func TestBatchResult(t *testing.T) {
 	}
 	if !result.CompletedAt.Equal(now) {
 		t.Errorf("expected CompletedAt %v, got %v", now, result.CompletedAt)
+	}
+}
+
+// TestInferenceRequestCtxCancellation guards I1: workers must be able to
+// observe parent-context cancellation through req.Ctx, and the Ctx field
+// must NOT be serialised onto the wire.
+func TestInferenceRequestCtxCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+
+	req := NewInferenceRequest(parent, "hello world", 32, PriorityNormal, RequestTypeCompletion)
+	if req.Ctx == nil {
+		t.Fatal("expected req.Ctx to be set from constructor argument")
+	}
+
+	cancel()
+
+	if err := req.Ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled after parent cancel, got %v", err)
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if strings.Contains(string(body), `"Ctx"`) || strings.Contains(string(body), `"ctx"`) {
+		t.Fatalf("expected Ctx to be omitted from JSON (json:\"-\"), got: %s", body)
+	}
+	if strings.Contains(string(body), "ResultChan") {
+		t.Fatalf("expected ResultChan to be omitted from JSON, got: %s", body)
 	}
 }
 

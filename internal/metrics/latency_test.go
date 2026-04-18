@@ -152,6 +152,115 @@ func TestLatencyTrackerConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
+// TestEWMARejectsSpike guards I7: a single-cycle p99 spike must not
+// propagate to the smoothed series. With alpha = 0.3 and seed 50ms, a
+// raw p99 of 500ms lands at 50 + 0.3*(500-50) = 185ms. After the spike
+// subsides back to 50ms, the smoothed value decays back toward 50.
+func TestEWMARejectsSpike(t *testing.T) {
+	lt := NewLatencyTracker(100, 0.3)
+
+	// Seed the smoothed series at 50ms.
+	lt.mu.Lock()
+	for i := 0; i < 100; i++ {
+		lt.samples = append(lt.samples, 50.0)
+	}
+	lt.count = 100
+	lt.mu.Unlock()
+
+	lt.materialize()
+	if seeded := lt.P99Smoothed(); math.Abs(seeded-50) > 0.001 {
+		t.Fatalf("expected seeded P99Smoothed = 50, got %v", seeded)
+	}
+
+	// Inject a single cycle with raw p99 = 500ms.
+	lt.mu.Lock()
+	for i := range lt.samples {
+		lt.samples[i] = 500.0
+	}
+	lt.mu.Unlock()
+
+	lt.materialize()
+	afterSpike := lt.P99Smoothed()
+	want := 50 + 0.3*(500-50) // 185
+	if math.Abs(afterSpike-want) > 0.001 {
+		t.Fatalf("expected P99Smoothed = %v after one spike, got %v", want, afterSpike)
+	}
+	if lt.P99() < 499 {
+		t.Fatalf("expected raw P99 to reflect spike (~500), got %v", lt.P99())
+	}
+
+	// Spike subsides: raw p99 back at 50. Smoothed decays toward 50.
+	lt.mu.Lock()
+	for i := range lt.samples {
+		lt.samples[i] = 50.0
+	}
+	lt.mu.Unlock()
+
+	lt.materialize()
+	afterDecay := lt.P99Smoothed()
+	wantDecay := 0.3*50 + 0.7*afterSpike // = 15 + 129.5 = 144.5
+	if math.Abs(afterDecay-wantDecay) > 0.001 {
+		t.Fatalf("expected decayed P99Smoothed = %v, got %v", wantDecay, afterDecay)
+	}
+	if afterDecay >= afterSpike {
+		t.Fatalf("expected decay toward 50 (%v < %v)", afterDecay, afterSpike)
+	}
+}
+
+// TestP99vsP99Smoothed guards I7: raw P99 tracks the reservoir exactly,
+// while P99Smoothed shows strictly less variance under a sawtooth input.
+func TestP99vsP99Smoothed(t *testing.T) {
+	lt := NewLatencyTracker(100, 0.3)
+
+	sawtooth := []float64{50, 150, 50, 150, 50, 150, 50, 150, 50, 150, 50, 150}
+
+	var rawSeries, smoothedSeries []float64
+	for _, v := range sawtooth {
+		lt.mu.Lock()
+		lt.samples = lt.samples[:0]
+		for i := 0; i < 100; i++ {
+			lt.samples = append(lt.samples, v)
+		}
+		lt.count = 100
+		lt.mu.Unlock()
+
+		lt.materialize()
+		rawSeries = append(rawSeries, lt.P99())
+		smoothedSeries = append(smoothedSeries, lt.P99Smoothed())
+	}
+
+	// Raw P99 must reflect the sawtooth exactly.
+	for i, want := range sawtooth {
+		if math.Abs(rawSeries[i]-want) > 0.001 {
+			t.Fatalf("raw P99[%d] = %v, want %v", i, rawSeries[i], want)
+		}
+	}
+
+	// Compare variance: skip the first sample (seeding), which aliases raw.
+	rawVar := variance(rawSeries[1:])
+	smoothedVar := variance(smoothedSeries[1:])
+	if smoothedVar >= rawVar {
+		t.Fatalf("expected smoothed variance (%v) < raw variance (%v)", smoothedVar, rawVar)
+	}
+}
+
+func variance(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, x := range xs {
+		sum += x
+	}
+	mean := sum / float64(len(xs))
+	var ss float64
+	for _, x := range xs {
+		d := x - mean
+		ss += d * d
+	}
+	return ss / float64(len(xs))
+}
+
 func TestPctile(t *testing.T) {
 	tests := []struct {
 		name     string

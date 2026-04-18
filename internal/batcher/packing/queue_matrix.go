@@ -33,6 +33,11 @@ type QueueMatrix struct {
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+	// mu serialises Submit (RLock) against Close (Lock) so that Close can
+	// safely close every sub-queue without racing a concurrent send. Reads
+	// against the channels (Drain / DrainAll) are safe without the lock —
+	// closed channels still drain buffered values via non-blocking receive.
+	mu sync.RWMutex
 }
 
 // NewQueueMatrix allocates all 48 sub-queues with a per-queue capacity
@@ -68,6 +73,8 @@ func (qm *QueueMatrix) Submit(req *models.InferenceRequest) error {
 	if req == nil {
 		return models.ErrInvalidRequest
 	}
+	qm.mu.RLock()
+	defer qm.mu.RUnlock()
 	if qm.closed.Load() {
 		return models.ErrShuttingDown
 	}
@@ -141,11 +148,23 @@ func (qm *QueueMatrix) Depth() int64 { return qm.depth.Load() }
 func (qm *QueueMatrix) PerQueueCapacity() int { return qm.perQueueCapacity }
 
 // Close marks the matrix as shutting down; subsequent Submit calls return
-// models.ErrShuttingDown. Already-queued requests remain drainable via
-// Drain / DrainAll. Close is idempotent.
+// models.ErrShuttingDown. All 48 sub-queue channels are also closed so
+// that non-blocking receives observe ok=false once their buffers drain —
+// this matches the invariant that Close + non-blocking recv yields
+// (nil, false). Already-queued requests remain drainable via Drain /
+// DrainAll (buffered values drain off closed channels). Close is idempotent.
 func (qm *QueueMatrix) Close() {
 	qm.closeOnce.Do(func() {
+		qm.mu.Lock()
+		defer qm.mu.Unlock()
 		qm.closed.Store(true)
+		for p := 0; p < numPriorities; p++ {
+			for rt := 0; rt < numRequestTypes; rt++ {
+				for b := 0; b < numTokenBuckets; b++ {
+					close(qm.queues[p][rt][b])
+				}
+			}
+		}
 	})
 }
 

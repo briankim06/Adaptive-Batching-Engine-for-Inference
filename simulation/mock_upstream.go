@@ -49,6 +49,11 @@ type MockUpstream struct {
 
 	mu   sync.Mutex
 	rand *rand.Rand
+
+	// observedPriorities captures the priority of every batch POST in the
+	// order it was received. Used by integration tests to assert that
+	// priority-split dispatch prevents FIFO inversion.
+	observedPriorities []models.Priority
 }
 
 // NewMockUpstream starts the mock server on an OS-chosen loopback port.
@@ -81,12 +86,35 @@ func (m *MockUpstream) HealthPath() string { return "/health" }
 // Close shuts down the httptest.Server and releases its listener.
 func (m *MockUpstream) Close() { m.server.Close() }
 
+// SetFailureRate atomically updates the mock's failure rate so tests can
+// flip health mid-run. A rate >= 1.0 also flips /health to 500 so the
+// pool's ping loop marks the upstream unhealthy.
+func (m *MockUpstream) SetFailureRate(rate float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.FailureRate = rate
+}
+
+// ObservedPriorities returns the priorities of every batch POST in the
+// order received. Batches are homogeneous by construction (QueueMatrix
+// guarantees this), so a single value per batch is sufficient.
+func (m *MockUpstream) ObservedPriorities() []models.Priority {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]models.Priority, len(m.observedPriorities))
+	copy(out, m.observedPriorities)
+	return out
+}
+
 func (m *MockUpstream) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	if m.cfg.FailureRate >= 1.0 {
+	m.mu.Lock()
+	rate := m.cfg.FailureRate
+	m.mu.Unlock()
+	if rate >= 1.0 {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -104,6 +132,8 @@ func (m *MockUpstream) handleBatch(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+
+	m.recordBatch(&batch)
 
 	if m.rollFailure() {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -129,6 +159,14 @@ func (m *MockUpstream) handleBatch(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(results)
+}
+
+func (m *MockUpstream) recordBatch(batch *models.Batch) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(batch.Requests) > 0 {
+		m.observedPriorities = append(m.observedPriorities, batch.Requests[0].Priority)
+	}
 }
 
 func (m *MockUpstream) rollFailure() bool {
