@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Adaptive Batching Engine — Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg:      #0b0f14;
+    --panel:   #131a22;
+    --border:  #1f2a36;
+    --text:    #d3dce6;
+    --muted:   #7a8896;
+    --accent:  #5fb3f2;
+    --accent2: #a47bff;
+    --ok:      #3ec28f;
+    --warn:    #e3b341;
+    --err:     #e55353;
+    --mono:    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.4; }
+  header {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 20px;
+    background: #0d131b;
+  }
+  header h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.08em; color: var(--text); }
+  header .sub { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
+  .conn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); letter-spacing: 0.04em; }
+  .conn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background 160ms; }
+  .conn.connected  .dot { background: var(--ok); }
+  .conn.connecting .dot { background: var(--warn); }
+  .conn.disconnected .dot { background: var(--err); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    grid-auto-rows: minmax(180px, auto);
+    gap: 12px;
+    padding: 12px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: flex; flex-direction: column;
+    min-height: 200px;
+    overflow: hidden;
+  }
+  .panel h2 {
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: #0f151c;
+  }
+  .panel .body { flex: 1; padding: 10px 12px; position: relative; min-height: 0; }
+  .panel canvas { width: 100% !important; height: 100% !important; }
+  .col-3  { grid-column: span 3; }
+  .col-4  { grid-column: span 4; }
+  .col-6  { grid-column: span 6; }
+  .col-12 { grid-column: span 12; }
+
+  .stat { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+  .stat:last-child { border-bottom: 0; }
+  .stat .k { color: var(--muted); }
+  .stat .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .big { font-size: 24px; font-weight: 600; color: var(--accent); letter-spacing: 0.04em; text-align: center; }
+  .big-sub { font-size: 10px; color: var(--muted); text-align: center; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
+
+  .workers {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 8px;
+  }
+  .worker {
+    padding: 8px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: #0f151c;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .worker .id { font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .worker .id::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .worker.status-0 { border-color: #1e4033; background: rgba(62,194,143,0.06); }
+  .worker.status-0 .id::before { background: var(--ok); box-shadow: 0 0 6px rgba(62,194,143,0.6); }
+  .worker.status-1 { border-color: #4a3e14; background: rgba(227,179,65,0.08); }
+  .worker.status-1 .id::before { background: var(--warn); box-shadow: 0 0 6px rgba(227,179,65,0.6); }
+  .worker.status-2 { border-color: #4a1f1f; background: rgba(229,83,83,0.1); }
+  .worker.status-2 .id::before { background: var(--err); box-shadow: 0 0 6px rgba(229,83,83,0.6); }
+  .worker .meta { color: var(--muted); font-size: 11px; display: flex; justify-content: space-between; }
+  .worker .meta .cb-closed { color: var(--ok); }
+  .worker .meta .cb-open   { color: var(--err); }
+  .worker .meta .cb-half   { color: var(--warn); }
+
+  .placeholder {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    height: 100%;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
+
+  @media (max-width: 1200px) {
+    .col-3 { grid-column: span 6; }
+    .col-4 { grid-column: span 6; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ADAPTIVE BATCHING ENGINE</h1>
+  <span class="sub" id="strategy-header">strategy: —</span>
+  <span class="sub" id="ws-url-label"></span>
+  <span id="conn" class="conn disconnected"><span class="dot"></span><span class="label">disconnected</span></span>
+</header>
+
+<div class="grid">
+  <div class="panel col-4">
+    <h2>Queue Depth · 60s</h2>
+    <div class="body"><canvas id="chart-queue"></canvas></div>
+  </div>
+  <div class="panel col-4">
+    <h2>Latency Percentiles · ms · 60s</h2>
+    <div class="body"><canvas id="chart-latency"></canvas></div>
+  </div>
+  <div class="panel col-4">
+    <h2>Throughput · RPS · 60s</h2>
+    <div class="body"><canvas id="chart-rps"></canvas></div>
+  </div>
+
+  <div class="panel col-6">
+    <h2>Batch Size Distribution</h2>
+    <div class="body">
+      <canvas id="chart-batch"></canvas>
+      <div id="batch-placeholder" class="placeholder" style="display:none;">
+        histogram available at /metrics — hidden without CORS
+      </div>
+    </div>
+  </div>
+  <div class="panel col-3">
+    <h2>Active Strategy</h2>
+    <div class="body" style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+      <div class="big" id="strategy-name">—</div>
+      <div class="big-sub" id="strategy-sub">awaiting config</div>
+    </div>
+  </div>
+  <div class="panel col-3">
+    <h2>System Stats</h2>
+    <div class="body"><div id="stats"></div></div>
+  </div>
+
+  <div class="panel col-12">
+    <h2>Workers</h2>
+    <div class="body"><div id="workers" class="workers"></div></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+<script>
+// The API WebSocket URL is injected by cmd/dashboard at serve time.
+const WS_URL = {{.WSURL}};
+
+(function() {
+  "use strict";
+
+  document.getElementById("ws-url-label").textContent = WS_URL;
+
+  // Derive an HTTP(S) base from the WS URL so supplementary fetches
+  // (/admin/config, /metrics) can be attempted. Cross-origin calls will
+  // fail silently if the API server has no CORS — the panels that
+  // depend on them just stay blank.
+  const HTTP_BASE = (function() {
+    try {
+      const u = new URL(WS_URL);
+      const scheme = u.protocol === "wss:" ? "https:" : "http:";
+      return scheme + "//" + u.host;
+    } catch (_) { return ""; }
+  })();
+
+  const WINDOW_MS    = 60 * 1000;
+  const RECONNECT_MIN = 500;
+  const RECONNECT_MAX = 10 * 1000;
+
+  const COLORS = {
+    accent:  "#5fb3f2",
+    accent2: "#a47bff",
+    ok:      "#3ec28f",
+    warn:    "#e3b341",
+    err:     "#e55353",
+    grid:    "#1f2a36",
+    muted:   "#7a8896",
+  };
+
+  const SERIES = {
+    queue: [],
+    p50:   [],
+    p99:   [],
+    rps:   [],
+  };
+
+  function pushPoint(arr, t, v) {
+    arr.push({ t, v });
+    const cutoff = t - WINDOW_MS;
+    while (arr.length && arr[0].t < cutoff) arr.shift();
+  }
+
+  const chartDefaults = {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    parsing: false,
+    plugins: {
+      legend: { labels: { color: COLORS.muted, font: { family: "monospace", size: 10 }, boxWidth: 10, boxHeight: 2 } },
+      tooltip: { enabled: false },
+    },
+    elements: { point: { radius: 0 }, line: { tension: 0.1, borderWidth: 1.5 } },
+  };
+
+  function timeLineChart(canvasId, datasets) {
+    const ctx = document.getElementById(canvasId).getContext("2d");
+    const now = Date.now();
+    const opts = Object.assign({}, chartDefaults, {
+      plugins: Object.assign({}, chartDefaults.plugins, {
+        legend: Object.assign({}, chartDefaults.plugins.legend, {
+          display: datasets.length > 1,
+        }),
+      }),
+      scales: {
+        x: {
+          type: "linear",
+          min: now - WINDOW_MS,
+          max: now,
+          ticks: {
+            color: COLORS.muted,
+            font: { family: "monospace", size: 10 },
+            maxTicksLimit: 6,
+            callback: (val) => {
+              const secs = Math.round((val - Date.now()) / 1000);
+              return secs + "s";
+            },
+          },
+          grid: { color: COLORS.grid, drawTicks: false },
+          border: { color: COLORS.grid },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: COLORS.muted, font: { family: "monospace", size: 10 }, maxTicksLimit: 5 },
+          grid: { color: COLORS.grid, drawTicks: false },
+          border: { color: COLORS.grid },
+        },
+      },
+    });
+    return new Chart(ctx, { type: "line", data: { datasets }, options: opts });
+  }
+
+  const chartQueue = timeLineChart("chart-queue", [
+    { label: "depth", data: [], borderColor: COLORS.accent, backgroundColor: COLORS.accent },
+  ]);
+  const chartLatency = timeLineChart("chart-latency", [
+    { label: "p50", data: [], borderColor: COLORS.ok,   backgroundColor: COLORS.ok },
+    { label: "p99", data: [], borderColor: COLORS.warn, backgroundColor: COLORS.warn },
+  ]);
+  const chartRPS = timeLineChart("chart-rps", [
+    { label: "rps", data: [], borderColor: COLORS.accent2, backgroundColor: COLORS.accent2 },
+  ]);
+
+  const chartBatch = new Chart(document.getElementById("chart-batch").getContext("2d"), {
+    type: "bar",
+    data: { labels: [], datasets: [{ label: "batches", data: [], backgroundColor: COLORS.accent, borderWidth: 0 }] },
+    options: Object.assign({}, chartDefaults, {
+      plugins: Object.assign({}, chartDefaults.plugins, {
+        legend: { display: false },
+      }),
+      scales: {
+        x: {
+          ticks: { color: COLORS.muted, font: { family: "monospace", size: 10 } },
+          grid: { color: COLORS.grid, drawTicks: false },
+          border: { color: COLORS.grid },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: COLORS.muted, font: { family: "monospace", size: 10 }, maxTicksLimit: 5 },
+          grid: { color: COLORS.grid, drawTicks: false },
+          border: { color: COLORS.grid },
+        },
+      },
+    }),
+  });
+
+  function refreshLineChart(chart, seriesList) {
+    const now = Date.now();
+    chart.data.datasets.forEach((ds, i) => {
+      const s = seriesList[i] || [];
+      ds.data = s.map((p) => ({ x: p.t, y: p.v }));
+    });
+    chart.options.scales.x.min = now - WINDOW_MS;
+    chart.options.scales.x.max = now;
+    chart.update("none");
+  }
+
+  function statusLabel(n) {
+    return n === 0 ? "idle" : n === 1 ? "busy" : n === 2 ? "unhealthy" : "unknown";
+  }
+  function circuitLabel(n) {
+    return n === 0 ? "closed" : n === 1 ? "open" : n === 2 ? "half-open" : "?";
+  }
+  function circuitClass(n) {
+    return n === 0 ? "cb-closed" : n === 1 ? "cb-open" : n === 2 ? "cb-half" : "";
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    })[c]);
+  }
+
+  function renderWorkers(workers) {
+    const root = document.getElementById("workers");
+    if (!Array.isArray(workers) || workers.length === 0) {
+      root.innerHTML = '<div class="placeholder">no workers reported</div>';
+      return;
+    }
+    root.innerHTML = workers.map((w) => {
+      const s  = Number(w.status);
+      const cb = Number(w.circuit_state);
+      return `
+        <div class="worker status-${s}">
+          <div class="id">${esc(w.id)}</div>
+          <div class="meta"><span>${statusLabel(s)}</span><span class="${circuitClass(cb)}">cb:${circuitLabel(cb)}</span></div>
+          <div class="meta"><span>batches</span><span>${Number(w.batches_processed || 0).toLocaleString()}</span></div>
+          <div class="meta"><span>tokens</span><span>${Number(w.tokens_processed || 0).toLocaleString()}</span></div>
+        </div>`;
+    }).join("");
+  }
+
+  const state = {
+    firstTs: null,
+    upstreamOK: true,
+    totalRequests: null,
+    totalErrors: null,
+    totalBatches: 0,
+    totalTokens: 0,
+    lastSnapTs: null,
+  };
+
+  function fmtDuration(ms) {
+    if (!isFinite(ms) || ms < 0) ms = 0;
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const pad = (n) => (n < 10 ? "0" + n : "" + n);
+    if (h > 0) return h + "h " + pad(m) + "m " + pad(sec) + "s";
+    if (m > 0) return m + "m " + pad(sec) + "s";
+    return sec + "s";
+  }
+
+  function renderStats() {
+    const el = document.getElementById("stats");
+    const uptime = state.firstTs ? Date.now() - state.firstTs : 0;
+    const upColor = state.upstreamOK ? "var(--ok)" : "var(--err)";
+    const upText  = state.upstreamOK ? "ok" : "DOWN";
+    const rows = [
+      ["uptime",   fmtDuration(uptime)],
+      ["upstream", `<span style="color:${upColor}">${upText}</span>`],
+      ["requests", state.totalRequests == null ? "—" : Math.round(state.totalRequests).toLocaleString()],
+      ["errors",   state.totalErrors   == null ? "—" : Math.round(state.totalErrors).toLocaleString()],
+      ["batches",  state.totalBatches.toLocaleString()],
+      ["tokens",   state.totalTokens.toLocaleString()],
+    ];
+    el.innerHTML = rows.map(([k, v]) => `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span></div>`).join("");
+  }
+
+  function onSnapshot(snap) {
+    if (!snap || typeof snap !== "object") return;
+    const ts = snap.timestamp ? new Date(snap.timestamp).getTime() : Date.now();
+    if (state.firstTs === null) state.firstTs = ts;
+    state.lastSnapTs = ts;
+
+    pushPoint(SERIES.queue, ts, Number(snap.queue_depth)   || 0);
+    pushPoint(SERIES.p50,   ts, Number(snap.latency_p50_ms) || 0);
+    pushPoint(SERIES.p99,   ts, Number(snap.latency_p99_ms) || 0);
+    pushPoint(SERIES.rps,   ts, Number(snap.throughput_rps) || 0);
+
+    refreshLineChart(chartQueue,   [SERIES.queue]);
+    refreshLineChart(chartLatency, [SERIES.p50, SERIES.p99]);
+    refreshLineChart(chartRPS,     [SERIES.rps]);
+
+    renderWorkers(snap.workers);
+
+    state.upstreamOK = snap.upstream_ok !== false;
+    if (Array.isArray(snap.workers)) {
+      let batches = 0, tokens = 0;
+      for (const w of snap.workers) {
+        batches += Number(w.batches_processed || 0);
+        tokens  += Number(w.tokens_processed  || 0);
+      }
+      state.totalBatches = batches;
+      state.totalTokens  = tokens;
+    }
+    renderStats();
+  }
+
+  function setConn(status) {
+    const el = document.getElementById("conn");
+    el.className = "conn " + status;
+    el.querySelector(".label").textContent = status;
+  }
+
+  let retryMs = RECONNECT_MIN;
+  let retryTimer = null;
+  function connect() {
+    setConn("connecting");
+    let ws;
+    try {
+      ws = new WebSocket(WS_URL);
+    } catch (err) {
+      scheduleReconnect();
+      return;
+    }
+    ws.onopen = () => {
+      setConn("connected");
+      retryMs = RECONNECT_MIN;
+    };
+    ws.onmessage = (ev) => {
+      try { onSnapshot(JSON.parse(ev.data)); }
+      catch (e) { /* ignore malformed frames */ }
+    };
+    ws.onerror = () => { /* close will follow */ };
+    ws.onclose = () => {
+      setConn("disconnected");
+      scheduleReconnect();
+    };
+  }
+  function scheduleReconnect() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, RECONNECT_MAX);
+  }
+
+  // Supplementary fetches — best effort, silently ignored on CORS failure.
+  async function fetchConfig() {
+    if (!HTTP_BASE) return;
+    try {
+      const res = await fetch(HTTP_BASE + "/admin/config", { cache: "no-store" });
+      if (!res.ok) return;
+      const cfg = await res.json();
+      const strat = cfg && cfg.Batching && cfg.Batching.Strategy;
+      if (strat) {
+        document.getElementById("strategy-name").textContent = strat;
+        document.getElementById("strategy-header").textContent = "strategy: " + strat;
+        const target = cfg.Batching.TargetP99Ms;
+        const sub = (strat === "latency_aware" && target)
+          ? "target p99 " + target + "ms"
+          : "live";
+        document.getElementById("strategy-sub").textContent = sub;
+      }
+    } catch (_) { /* CORS or offline — panel stays blank */ }
+  }
+
+  async function fetchPromMetrics() {
+    if (!HTTP_BASE) return;
+    try {
+      const res = await fetch(HTTP_BASE + "/metrics", { cache: "no-store" });
+      if (!res.ok) return;
+      const text = await res.text();
+      parsePrometheus(text);
+      document.getElementById("batch-placeholder").style.display = "none";
+    } catch (_) {
+      const ph = document.getElementById("batch-placeholder");
+      if (ph) ph.style.display = "flex";
+    }
+  }
+
+  function parsePrometheus(text) {
+    const buckets = {};
+    let total = null, errs = null;
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (!line || line.charCodeAt(0) === 35 /* '#' */) continue;
+      let m = line.match(/^batcher_batch_size_bucket\{le="([^"]+)"\}\s+([0-9eE.+\-]+)/);
+      if (m) { buckets[m[1]] = parseFloat(m[2]); continue; }
+      m = line.match(/^requests_total(?:\{[^}]*\})?\s+([0-9eE.+\-]+)/);
+      if (m) { total = parseFloat(m[1]); continue; }
+      m = line.match(/^requests_errors_total(?:\{[^}]*\})?\s+([0-9eE.+\-]+)/);
+      if (m) { errs = parseFloat(m[1]); continue; }
+    }
+    const leKeys = Object.keys(buckets).sort((a, b) => {
+      const na = a === "+Inf" ? Infinity : parseFloat(a);
+      const nb = b === "+Inf" ? Infinity : parseFloat(b);
+      return na - nb;
+    });
+    const labels = [];
+    const data = [];
+    let prev = 0;
+    for (const k of leKeys) {
+      if (k === "+Inf") continue;
+      const v = buckets[k];
+      labels.push("≤" + k);
+      data.push(Math.max(0, v - prev));
+      prev = v;
+    }
+    if (labels.length > 0) {
+      chartBatch.data.labels = labels;
+      chartBatch.data.datasets[0].data = data;
+      chartBatch.update("none");
+    }
+    if (total !== null) state.totalRequests = total;
+    if (errs  !== null) state.totalErrors   = errs;
+    renderStats();
+  }
+
+  setInterval(renderStats, 1000);
+  fetchConfig();
+  fetchPromMetrics();
+  setInterval(fetchConfig, 10 * 1000);
+  setInterval(fetchPromMetrics, 2 * 1000);
+
+  renderStats();
+  connect();
+})();
+</script>
+</body>
+</html>

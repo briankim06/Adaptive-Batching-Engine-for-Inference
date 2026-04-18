@@ -1,4 +1,4 @@
-.PHONY: build test test-coverage run lint sim clean deps bench
+.PHONY: build test test-coverage run lint sim dashboard clean deps bench
 
 # Spec targets (docs/spec/01-setup.md): build, test, run, lint, sim.
 
@@ -20,6 +20,9 @@ lint:
 
 sim:
 	go run ./cmd/simulator
+
+dashboard:
+	go run ./cmd/dashboard
 
 clean:
 	rm -rf bin coverage.out coverage.html
