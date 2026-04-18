@@ -48,11 +48,11 @@ func RampUp() Scenario {
 	}
 }
 
-// SpikeTest — 800 RPS base with a single 3× burst at t=30s for 5s.
+// SpikeTest — 1200 RPS base with a single 10× burst at t=30s for 5s.
 // The bursty generator repeats (BurstInterval + BurstDuration), so
 // picking BurstInterval=30s and BurstDuration=5s means exactly one
 // burst fires within the 60s scenario duration (at t=30s) and leaves
-// 25s of recovery time. A 3× multiplier keeps the spike stressful but
+// 25s of recovery time. A 10× multiplier keeps the spike stressful but
 // recoverable — higher multipliers (e.g. 5×) overwhelm the worker pool
 // so badly that batching strategy choice becomes irrelevant.
 func SpikeTest() Scenario {
@@ -62,7 +62,7 @@ func SpikeTest() Scenario {
 	}
 	return Scenario{
 		Name:      "spike_test",
-		Generator: NewBurstyGenerator(800, 3, 30*time.Second, 5*time.Second, cfg),
+		Generator: NewBurstyGenerator(1200, 10, 30*time.Second, 5*time.Second, cfg),
 		Duration:  scenarioDuration,
 	}
 }

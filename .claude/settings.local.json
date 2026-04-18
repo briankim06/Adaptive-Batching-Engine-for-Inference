@@ -11,7 +11,8 @@
       "Bash(pkill -f \"cmd/dashboard\")",
       "Bash(pkill -f \"exe/dashboard\")",
       "Bash(lsof -nP -iTCP:8081 -sTCP:LISTEN)",
-      "Bash(ABE_DASHBOARD_ENABLED=false go run ./cmd/dashboard)"
+      "Bash(ABE_DASHBOARD_ENABLED=false go run ./cmd/dashboard)",
+      "Bash(/tmp/sim *)"
     ]
   }
 }

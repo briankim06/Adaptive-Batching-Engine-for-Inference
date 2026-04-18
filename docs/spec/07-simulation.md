@@ -73,13 +73,13 @@ Helper: randomRequest(ctx context.Context, cfg GeneratorConfig) *models.Inferenc
 
 ## Predefined Scenarios
 
-| Scenario       | Generator     | Config                                             | Duration |
-|----------------|---------------|----------------------------------------------------|----------|
-| steady_state   | ConstantRate  | 100 RPS                                            | 60s      |
-| ramp_up        | Ramp          | 10 → 500 RPS                                       | 60s      |
-| spike_test     | Bursty        | 100 RPS base, 10× burst at 30s for 10s             | 60s      |
-| mixed_priority | ConstantRate  | 100 RPS, 80%/15%/5% priority split                 | 60s      |
-| long_tail      | ConstantRate  | 100 RPS, bimodal tokens: 70% ~100tok, 30% ~3000tok | 60s      |
+| Scenario       | Generator     | Config                                              | Duration |
+|----------------|---------------|-----------------------------------------------------|----------|
+| steady_state   | ConstantRate  | 1200 RPS                                            | 60s      |
+| ramp_up        | Ramp          | 10 → 500 RPS                                        | 60s      |
+| spike_test     | Bursty        | 1200 RPS base, 10× burst at 30s for 5s              | 60s      |
+| mixed_priority | ConstantRate  | 100 RPS, 80%/15%/5% priority split                  | 60s      |
+| long_tail      | ConstantRate  | 100 RPS, bimodal tokens: 70% ~100tok, 30% ~3000tok  | 60s      |
 
 ### Task 7.2 — Test Scenarios
 
@@ -89,9 +89,9 @@ Implement simulation/scenarios.go:
 Scenario struct with Name string, Generator Generator, Duration time.Duration.
 
 Functions returning Scenario:
-  SteadyState()     — constant 100 RPS, 60s
+  SteadyState()     — constant 1200 RPS, 60s (sized to ~80–90% of mock upstream batched capacity)
   RampUp()          — ramp 10→500 RPS over 60s
-  SpikeTest()       — bursty: 100 RPS base, 10x burst at t=30s for 10s
+  SpikeTest()       — bursty: 1200 RPS base, 10x burst at t=30s for 5s
   MixedPriority()   — constant 100 RPS, priority split 80/15/5
   LongTail()        — constant 100 RPS, bimodal token distribution
 

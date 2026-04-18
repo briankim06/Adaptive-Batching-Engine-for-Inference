@@ -26,6 +26,10 @@ func (s *FixedStrategy) CalculateTimeout(_ int, _ *StrategyMetrics) time.Duratio
 	return time.Duration(s.maxWaitMs) * time.Millisecond
 }
 
-func (s *FixedStrategy) ShouldFlush(batch []*models.InferenceRequest, _ int) bool {
-	return len(batch) >= s.maxBatchSize
+// ShouldFlush returns true when the batch is full OR matrix-wide pressure
+// reaches maxBatchSize — at that point sibling sub-queues have enough
+// aggregate work that holding the formation loop for this partial batch
+// would starve them. queueDepth is the QueueMatrix-wide total.
+func (s *FixedStrategy) ShouldFlush(batch []*models.InferenceRequest, queueDepth int) bool {
+	return len(batch) >= s.maxBatchSize || queueDepth >= s.maxBatchSize
 }

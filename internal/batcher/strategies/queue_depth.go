@@ -50,6 +50,11 @@ func (s *QueueDepthStrategy) CalculateTimeout(queueDepth int, _ *StrategyMetrics
 	return time.Duration(waitMs) * time.Millisecond
 }
 
-func (s *QueueDepthStrategy) ShouldFlush(batch []*models.InferenceRequest, _ int) bool {
-	return len(batch) >= s.maxBatchSize
+// ShouldFlush returns true when the batch is full OR matrix-wide pressure
+// reaches maxBatchSize. CalculateTimeout already compresses the window
+// under depth, but this is a hard safety valve for configurations that
+// tune minWaitMs aggressively high — it prevents a pinned sub-queue from
+// starving siblings inside the formation loop.
+func (s *QueueDepthStrategy) ShouldFlush(batch []*models.InferenceRequest, queueDepth int) bool {
+	return len(batch) >= s.maxBatchSize || queueDepth >= s.maxBatchSize
 }
